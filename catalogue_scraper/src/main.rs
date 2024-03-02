@@ -1,10 +1,12 @@
 mod requirement_extractor;
+mod requirement_parser;
 
 use crate::requirement_extractor::extract_requirements;
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
 use requirement_extractor::RequirementKind;
+use requirement_parser::parse_requirements;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{stdout, ErrorKind, Write};
@@ -82,6 +84,9 @@ fn main() -> Result<()> {
                 .with_context(|| format!("course meta for {course_link} failed"))?;
             let course_desc = get_course_desc(&course_vdom)
                 .with_context(|| format!("course desc for {course_link} failed"))?;
+            if false {
+                _ = parse_requirements(&course_desc.as_ref().unwrap())
+            };
             let course_reqs = course_desc
                 .as_deref()
                 .map(|s| {
