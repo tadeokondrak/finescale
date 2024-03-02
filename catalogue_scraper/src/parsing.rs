@@ -38,19 +38,12 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
         (\.|$)
     ";
 
-    fn get_no_prerequisite_regex() -> &'static Regex {
-        static STATIC: OnceLock<Regex> = OnceLock::new();
-        STATIC.get_or_init(|| Regex::new(NO_PREREQUISITE_REGEX).unwrap())
-    }
-
-    fn get_prerequisite_regex() -> &'static Regex {
-        static STATIC: OnceLock<Regex> = OnceLock::new();
-        STATIC.get_or_init(|| Regex::new(PREREQUISITE_REGEX).unwrap())
-    }
-
-    fn get_corequisite_regex() -> &'static Regex {
-        static STATIC: OnceLock<Regex> = OnceLock::new();
-        STATIC.get_or_init(|| Regex::new(COREQUISITE_REGEX).unwrap())
+    fn get_regexes() -> &'static [Regex; 3] {
+        static STATIC: OnceLock<[Regex; 3]> = OnceLock::new();
+        STATIC.get_or_init(|| {
+            [COREQUISITE_REGEX, PREREQUISITE_REGEX, NO_PREREQUISITE_REGEX]
+                .map(|expr| Regex::new(expr).unwrap())
+        })
     }
 
     let kinds = [
@@ -59,11 +52,7 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
         None,
     ];
     let exprs = [COREQUISITE_REGEX, PREREQUISITE_REGEX, NO_PREREQUISITE_REGEX];
-    let regexes = [
-        get_corequisite_regex(),
-        get_prerequisite_regex(),
-        get_no_prerequisite_regex(),
-    ];
+    let regexes = get_regexes();
 
     let set = RegexSet::new(exprs).unwrap();
     let mut i = 0;
