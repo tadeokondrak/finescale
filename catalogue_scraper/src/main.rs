@@ -1,10 +1,11 @@
 mod requirement_extractor;
+mod requirement_parser;
 
-use crate::requirement_extractor::extract_requirements;
+use crate::requirement_extractor::{extract_requirements, RequirementKind};
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
-use requirement_extractor::RequirementKind;
+use requirement_parser::{parse_requirement, Entity, Requirement};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{stdout, ErrorKind, Write};
@@ -85,20 +86,33 @@ fn main() -> Result<()> {
             let course_reqs = course_desc
                 .as_deref()
                 .map(|s| {
-                    // Kind of annoying but this will go away soon
                     extract_requirements(s)
                         .into_iter()
-                        .map(|(kind, text)| (kind, text.to_owned()))
+                        .map(|(kind, text)| (kind, parse_requirement(text).ok()))
                         .collect()
                 })
                 .unwrap_or_default();
+
             let course_data = CourseData {
                 meta: course_meta,
                 desc: course_desc,
                 reqs: course_reqs,
             };
-            writer.write_all(course_data.to_json_string().as_bytes())?;
-            writer.write_all(b"\n")?;
+            //writer.write_all(course_data.to_json_string().as_bytes())?;
+            //writer.write_all(b"\n")?;
+
+            eprintln!("{}", course_data.meta.course);
+            eprintln!(
+                "{:?}",
+                extract_requirements(course_data.desc.as_deref().unwrap_or_default())
+            );
+            eprintln!(
+                "{:?}",
+                extract_requirements(course_data.desc.as_deref().unwrap_or_default())
+                    .into_iter()
+                    .map(|(kind, text)| (kind, parse_requirement(text).ok()))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
@@ -109,7 +123,7 @@ fn main() -> Result<()> {
 struct CourseData<'a> {
     meta: CourseMeta<'a>,
     desc: Option<Cow<'a, str>>,
-    reqs: Vec<(RequirementKind, String)>,
+    reqs: Vec<(RequirementKind, Option<Requirement>)>,
 }
 
 impl CourseData<'_> {
@@ -133,17 +147,46 @@ impl CourseData<'_> {
             None => data.null("desc"),
         };
         let mut reqs = data.array("reqs");
-        self.reqs.iter().for_each(|(kind, name)| match kind {
-            RequirementKind::Prerequisite => {
-                reqs.object().string("prereq", name);
-            }
-            RequirementKind::Corequisite => {
-                reqs.object().string("coreq", name);
-            }
-        });
+        self.reqs
+            .iter()
+            .filter_map(|(kind, req)| Some((kind, req.as_ref()?)))
+            .for_each(|(kind, req)| {
+                let kind_str = match kind {
+                    RequirementKind::Prerequisite => "prerequisite",
+                    RequirementKind::Corequisite => "corequisite",
+                };
+                serialize_req(&mut reqs.object().object(kind_str), req);
+            });
         drop(reqs);
         drop(data);
         buf
+    }
+}
+
+fn serialize_req(out: &mut write_json::Object<'_>, req: &Requirement) {
+    match req {
+        Requirement::Course(course) => {
+            out.string("course", course);
+        }
+        Requirement::ConsentOf(entity) => {
+            let entity_str = match entity {
+                Entity::Department => "department",
+                Entity::Instructor => "instructor",
+            };
+            out.string("consent_of", entity_str);
+        }
+        Requirement::Any(reqs) => {
+            let mut obj = out.array("any");
+            for req in reqs {
+                serialize_req(&mut obj.object(), req)
+            }
+        },
+        Requirement::All(reqs) => {
+            let mut obj = out.array("all");
+            for req in reqs {
+                serialize_req(&mut obj.object(), req)
+            }
+        },
     }
 }
 
