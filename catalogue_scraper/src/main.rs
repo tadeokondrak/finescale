@@ -1,3 +1,5 @@
+mod parsing;
+
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
