@@ -1,12 +1,13 @@
-mod parsing;
+mod requirement_extractor;
 
-use crate::parsing::extract_requirements;
+use crate::requirement_extractor::extract_requirements;
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
+use requirement_extractor::RequirementKind;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{stdout, ErrorKind};
+use std::io::{stdout, ErrorKind, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
@@ -81,20 +82,23 @@ fn main() -> Result<()> {
                 .with_context(|| format!("course meta for {course_link} failed"))?;
             let course_desc = get_course_desc(&course_vdom)
                 .with_context(|| format!("course desc for {course_link} failed"))?;
+            let course_reqs = course_desc
+                .as_deref()
+                .map(|s| {
+                    // Kind of annoying but this will go away soon
+                    extract_requirements(s)
+                        .into_iter()
+                        .map(|(kind, text)| (kind, text.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default();
             let course_data = CourseData {
                 meta: course_meta,
                 desc: course_desc,
+                reqs: course_reqs,
             };
-            if let Some(desc) = &course_data.desc {
-                if true && course_data.meta.career == "UGRD" {
-                    let requirements = extract_requirements(desc);
-                    for (_, text) in requirements {
-                        println!("{text} -- {}", course_data.meta.course);
-                    }
-                }
-            }
-            // writer.write_all(course_data.to_json_string().as_bytes())?;
-            // writer.write_all(b"\n")?;
+            writer.write_all(course_data.to_json_string().as_bytes())?;
+            writer.write_all(b"\n")?;
         }
     }
 
@@ -105,6 +109,7 @@ fn main() -> Result<()> {
 struct CourseData<'a> {
     meta: CourseMeta<'a>,
     desc: Option<Cow<'a, str>>,
+    reqs: Vec<(RequirementKind, String)>,
 }
 
 impl CourseData<'_> {
@@ -127,6 +132,16 @@ impl CourseData<'_> {
             Some(it) => data.string("desc", it),
             None => data.null("desc"),
         };
+        let mut reqs = data.array("reqs");
+        self.reqs.iter().for_each(|(kind, name)| match kind {
+            RequirementKind::Prerequisite => {
+                reqs.object().string("prereq", name);
+            }
+            RequirementKind::Corequisite => {
+                reqs.object().string("coreq", name);
+            }
+        });
+        drop(reqs);
         drop(data);
         buf
     }

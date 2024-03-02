@@ -9,8 +9,6 @@ pub enum RequirementKind {
 }
 
 pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
-    // TODO merge these into a single static
-
     const NO_PREREQUISITE_REGEX: &str = r"(?x)(?i)
         no \s (?<kind>pre-?requisite) ((\(s\)) | s)?
     ";
@@ -38,12 +36,11 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
         (\.|$)
     ";
 
-    fn get_regexes() -> &'static [Regex; 3] {
+    const EXPRESSIONS: [&str; 3] = [COREQUISITE_REGEX, PREREQUISITE_REGEX, NO_PREREQUISITE_REGEX];
+
+    fn get_compiled_regexes() -> &'static [Regex; 3] {
         static STATIC: OnceLock<[Regex; 3]> = OnceLock::new();
-        STATIC.get_or_init(|| {
-            [COREQUISITE_REGEX, PREREQUISITE_REGEX, NO_PREREQUISITE_REGEX]
-                .map(|expr| Regex::new(expr).unwrap())
-        })
+        STATIC.get_or_init(|| EXPRESSIONS.map(|expr| Regex::new(expr).unwrap()))
     }
 
     let kinds = [
@@ -51,27 +48,23 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
         Some(RequirementKind::Prerequisite),
         None,
     ];
-    let exprs = [COREQUISITE_REGEX, PREREQUISITE_REGEX, NO_PREREQUISITE_REGEX];
-    let regexes = get_regexes();
+    let regexes = get_compiled_regexes();
+    let set = RegexSet::new(EXPRESSIONS).unwrap();
 
-    let set = RegexSet::new(exprs).unwrap();
     let mut i = 0;
     let mut results = Vec::new();
-    loop {
-        let matches = set.matches_at(s, i);
-        let Some((first_match, first_match_kind)) = matches
-            .into_iter()
-            .filter_map(|m| Some((regexes[m].captures_at(s, i)?, m)))
-            .min_by_key(|&(ref captures, m)| {
-                (
-                    captures.get(0).unwrap().start(),
-                    cmp::Reverse(captures.name("kind").unwrap().len()),
-                    m,
-                )
-            })
-        else {
-            break;
-        };
+    while let Some((first_match, first_match_kind)) = set
+        .matches_at(s, i)
+        .into_iter()
+        .filter_map(|m| Some((regexes[m].captures_at(s, i)?, m)))
+        .min_by_key(|&(ref captures, m)| {
+            (
+                captures.get(0).unwrap().start(),
+                cmp::Reverse(captures.name("kind").unwrap().len()),
+                m,
+            )
+        })
+    {
         if let Some(kind) = kinds[first_match_kind] {
             let data = first_match.name("data").unwrap();
             let text = &s[data.range()];
