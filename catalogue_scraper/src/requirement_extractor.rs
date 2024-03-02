@@ -53,10 +53,45 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
 
     let mut i = 0;
     let mut results = Vec::new();
+
+    // Note: matches(&s[i..]) is intentionally used instead of matches_at(s, i).
+    //
+    // Previously, this code used matches_at, but it fails for this case:
+    // ```
+    // Prerequisite: PHYS 124 (see Note following) or 144. Corequisite: MATH 118 or 146.
+    // ^ first character to match
+    // ```
+    //
+    // The first prerequisite is matched first:
+    // ```
+    // Prerequisite: PHYS 124 (see Note following) or 144. Corequisite: MATH 118 or 146.
+    // ^-------------------------------------------------^
+    //                                                    ^ new first character to match
+    // ```
+    //
+    // Now, presumably, we'd have the same behaviour as matching the string
+    // ```
+    //  Corequisite: MATH 118 or 146.
+    // ```
+    //
+    // However, the regular expressions start with (^|\.|:)\s*` to make sure we're
+    // only matching at the start of a sentence.
+    //
+    // The `^` rule doesn't match, because we're not actually at the start of the
+    // string. The `\.` rule doesn't match, because we've removed the context before
+    // the string. If the regex crate had lookbehind, we could probably get around
+    // this in the expression itself. Instead, we intentionally treat the rest of
+    // the string as a completely new string.
+    //
+    // As I'm writing this, I'm realizing that this wouldn't be a problem if we had
+    // used Regex instead of RegexSet, because Regex has `find_iter` which returns
+    // an iterator over non-overlapping matches. I think finding a way to do
+    // something similar for a RegexSet will be the proper solution here.
+
     while let Some((first_match, first_match_kind)) = set
-        .matches_at(s, i)
+        .matches(&s[i..])
         .into_iter()
-        .filter_map(|m| Some((regexes[m].captures_at(s, i)?, m)))
+        .filter_map(|m| Some((regexes[m].captures(&s[i..])?, m)))
         .min_by_key(|&(ref captures, m)| {
             (
                 captures.get(0).unwrap().start(),
@@ -67,10 +102,10 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
     {
         if let Some(kind) = kinds[first_match_kind] {
             let data = first_match.name("data").unwrap();
-            let text = &s[data.range()];
+            let text = &s[i..][data.start()..data.end()];
             results.push((kind, text));
         }
-        i = first_match.get(0).unwrap().end();
+        i += first_match.get(0).unwrap().end();
     }
     results
 }
@@ -79,6 +114,7 @@ pub fn extract_requirements(s: &str) -> Vec<(RequirementKind, &str)> {
 mod tests {
     use super::*;
     use expect_test::{expect, Expect};
+    use std::fmt::Write;
 
     #[track_caller]
     fn check_no_requirements(s: &str) {
@@ -104,6 +140,15 @@ mod tests {
         };
         assert_eq!(result_kind, requirement_kind, "{result_kind:?}");
         output.assert_eq(result_text);
+    }
+
+    #[track_caller]
+    fn check_requirements(s: &str, output: Expect) {
+        let mut out = String::new();
+        for (kind, text) in extract_requirements(s) {
+            writeln!(&mut out, "{kind:?}: {text:?}").unwrap();
+        }
+        output.assert_eq(&out);
     }
 
     #[test]
@@ -220,6 +265,39 @@ mod tests {
         check_no_requirements(
             "Note: Consult the Department of Psychology's website for the specific topic(s) \
              offered each year and any additional prerequisites. [Faculty of Arts]",
+        );
+    }
+
+    #[test]
+    fn extract_requirements_with_extra_information_surrounding() {
+        check_requirements(
+            "Prerequisites: Mathematics 30-1 and Physics 30. Mathematics 31 is strongly \
+             recommended. Corequisites: MATH 117 or 144. Note: MATH 113 or 114 is not acceptable \
+             as a co-requisite but may be used as a pre-requisite in place of MATH 117 or 144. \
+             Note: Credit may be obtained for only one of PHYS 124, 144, EN PH 131 or SCI 100. ",
+            expect![[r#"
+                Prerequisite: "Mathematics 30-1 and Physics 30"
+                Corequisite: "MATH 117 or 144"
+            "#]],
+        );
+        check_coreq(
+            " Corequisite: MATH 118 or 146. Note: MATH 115 is not acceptable as a co-requisite \
+             but may be used as a pre-requisite in place of MATH 118 or 146. Note: Credit may be \
+             obtained for only one of PHYS 126, 130, 146 or SCI 100. Note: To proceed to PHYS 146 \
+             after taking PHYS 124, it is strongly recommended that a minimum grade of B- be \
+             achieved in PHYS 124.",
+            expect!["MATH 118 or 146"],
+        );
+        check_requirements(
+            "Prerequisite: PHYS 124 (see Note following) or 144. Corequisite: MATH 118 or 146. \
+             Note: MATH 115 is not acceptable as a co-requisite but may be used as a \
+             pre-requisite in place of MATH 118 or 146. Note: Credit may be obtained for only one \
+             of PHYS 126, 130, 146 or SCI 100. Note: To proceed to PHYS 146 after taking PHYS \
+             124, it is strongly recommended that a minimum grade of B- be achieved in PHYS 124. ",
+            expect![[r#"
+                Prerequisite: "PHYS 124 (see Note following) or 144"
+                Corequisite: "MATH 118 or 146"
+            "#]],
         );
     }
 
