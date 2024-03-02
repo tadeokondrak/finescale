@@ -1,11 +1,12 @@
 mod parsing;
 
+use crate::parsing::extract_requirements;
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{stdout, ErrorKind, Write};
+use std::io::{stdout, ErrorKind};
 use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
@@ -84,8 +85,16 @@ fn main() -> Result<()> {
                 meta: course_meta,
                 desc: course_desc,
             };
-            writer.write_all(course_data.to_json_string().as_bytes())?;
-            writer.write_all(b"\n")?;
+            if let Some(desc) = &course_data.desc {
+                if true && course_data.meta.career == "UGRD" {
+                    let requirements = extract_requirements(desc);
+                    for (_, text) in requirements {
+                        println!("{text} -- {}", course_data.meta.course);
+                    }
+                }
+            }
+            // writer.write_all(course_data.to_json_string().as_bytes())?;
+            // writer.write_all(b"\n")?;
         }
     }
 

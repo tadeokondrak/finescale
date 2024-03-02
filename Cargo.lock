@@ -312,6 +312,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
+ "expect-test",
  "html-escape",
  "log",
  "rate_limit",
@@ -561,14 +562,6 @@ dependencies = [
 [[package]]
 name = "course_graph_builder"
 version = "0.1.0"
-
-[[package]]
-name = "course_requirement_parser"
-version = "0.1.0"
-dependencies = [
- "expect-test",
- "regex",
-]
 
 [[package]]
 name = "crc32fast"
