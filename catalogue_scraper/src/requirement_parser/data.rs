@@ -1,3 +1,4 @@
+#[allow(unused)]
 pub(super) const ALBERTA_HIGH_SCHOOL_TOPICS: [&'static str; 18] = [
     "arabic",
     "art",
@@ -52,6 +53,7 @@ pub(super) const UALBERTA_TOPICS: [&'static str; 323] = [
     "WKEXP", "WRITE", "WRS", "ZOOL", "ZOOLE",
 ];
 
+#[allow(unused)]
 pub(super) const UALBERTA_TOPICS_WITH_SPACES: [&'static str; 36] = [
     "AN SC", "B LAW", "CH E", "CIV E", "C LIT", "D HYG", "EDU F", "EDU M", "EDU P", "EDU S",
     "ENG M", "EN PH", "ENV E", "ET RE", "F MED", "FR ED", "HE ED", "INT D", "LA ST", "MA PH",
