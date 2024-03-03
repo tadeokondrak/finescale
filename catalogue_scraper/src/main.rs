@@ -169,24 +169,20 @@ fn serialize_req(out: &mut write_json::Object<'_>, req: &Requirement) {
             out.string("course", course);
         }
         Requirement::ConsentOf(entity) => {
-            let entity_str = match entity {
-                Entity::Department => "department",
-                Entity::Instructor => "instructor",
-            };
-            out.string("consent_of", entity_str);
+            out.string("consent_of", &entity.to_string());
         }
         Requirement::Any(reqs) => {
             let mut obj = out.array("any");
             for req in reqs {
                 serialize_req(&mut obj.object(), req)
             }
-        },
+        }
         Requirement::All(reqs) => {
             let mut obj = out.array("all");
             for req in reqs {
                 serialize_req(&mut obj.object(), req)
             }
-        },
+        }
     }
 }
 

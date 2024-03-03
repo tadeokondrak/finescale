@@ -3,6 +3,24 @@ use std::iter;
 
 mod data;
 
+// TODO: preprocessing
+// Would contain rules like "Math 30, 30-1, or 30- 2" => "Math 30, 30-1, or
+// 30-2"
+
+// TODO: list parsing functions
+// They need to parse only lists that consistently use the same format
+// Good: "A, B, C, D, or E"
+// Good: "A, B, C, D or E"
+// Good: "A or B or C or D or E"
+// Bad: "A, or B"
+// Bad (as one list): "A or B, C, D or E"
+// It would obviously be inefficient to do this for a programming language,
+// but I think this is relatively maintainable and should hopefully not be
+// unusably slow.
+
+// I also wonder if we need to define precedence for punctuation.
+// A comma binds tighter than a semicolon.
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Requirement {
     Any(Vec<Requirement>),
@@ -46,20 +64,22 @@ impl fmt::Debug for Requirement {
 pub enum Entity {
     Department,
     Instructor,
+    College,
 }
 
 impl fmt::Display for Entity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Department => write!(f, "department"),
-            Self::Instructor => write!(f, "instructor"),
+            Entity::Department => write!(f, "department"),
+            Entity::Instructor => write!(f, "instructor"),
+            Entity::College => write!(f, "instructor"),
         }
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    Unspecified,
+    Unrecognized,
 }
 
 pub fn parse_requirement(s: &str) -> Result<Requirement, ParseError> {
@@ -203,32 +223,22 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse_requirement(&mut self) -> Result<Requirement, ParseError> {
+        // The otherwise left-recursive rules go here.
         self.run_parsers(&[
             Parser::parse_any_of_requirements,
             Parser::parse_all_of_requirements,
             Parser::parse_base_requirement,
         ])?
-        .ok_or(ParseError::Unspecified)
+        .ok_or(ParseError::Unrecognized)
     }
 
-    fn parse_list_of_requirements(
-        &mut self,
-        sep_predicate: impl Fn(&str) -> bool,
-    ) -> Result<Option<Vec<Requirement>>, ParseError> {
-        let Some(first_req) = self.parse_base_requirement()? else {
-            return Ok(None);
-        };
-        let mut requirements = vec![first_req];
-        while sep_predicate(self.current_token()) {
-            self.bump();
-            if let Some(next_req) = self.parse_base_requirement()? {
-                requirements.push(next_req);
-                continue;
-            }
-            break;
-        }
-
-        Ok(Some(requirements))
+    fn parse_base_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
+        self.run_parsers(&[
+            Parser::parse_any_of_courses_shared_topic,
+            Parser::parse_all_of_courses_shared_topic,
+            Parser::parse_lone_course_requirement,
+            Parser::parse_consent_of_entity_requirement,
+        ])
     }
 
     fn run_parsers(
@@ -243,19 +253,6 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(None)
-    }
-
-    fn eat_any_of_or_one_of(&mut self) -> bool {
-        if self.eat_multiple(&["Any", "of"])
-            || self.eat_multiple(&["any", "of"])
-            || self.eat_multiple(&["One", "of"])
-            || self.eat_multiple(&["one", "of"])
-        {
-            self.eat(":");
-            true
-        } else {
-            false
-        }
     }
 
     fn parse_any_of_requirements(&mut self) -> Result<Option<Requirement>, ParseError> {
@@ -279,6 +276,39 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         Ok(Some(Requirement::All(reqs)))
+    }
+
+    fn parse_list_of_requirements(
+        &mut self,
+        sep_predicate: impl Fn(&str) -> bool,
+    ) -> Result<Option<Vec<Requirement>>, ParseError> {
+        let Some(first_req) = self.parse_base_requirement()? else {
+            return Ok(None);
+        };
+        let mut requirements = vec![first_req];
+        while sep_predicate(self.current_token()) {
+            self.bump();
+            if let Some(next_req) = self.parse_base_requirement()? {
+                requirements.push(next_req);
+                continue;
+            }
+            break;
+        }
+
+        Ok(Some(requirements))
+    }
+
+    fn eat_any_of_or_one_of(&mut self) -> bool {
+        if self.eat_multiple(&["Any", "of"])
+            || self.eat_multiple(&["any", "of"])
+            || self.eat_multiple(&["One", "of"])
+            || self.eat_multiple(&["one", "of"])
+        {
+            self.eat(":");
+            true
+        } else {
+            false
+        }
     }
 
     fn parse_any_of_courses_shared_topic(&mut self) -> Result<Option<Requirement>, ParseError> {
@@ -332,16 +362,7 @@ impl<'a> Parser<'a> {
         Ok(Some(requirements))
     }
 
-    fn parse_base_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
-        self.run_parsers(&[
-            Parser::parse_any_of_courses_shared_topic,
-            Parser::parse_all_of_courses_shared_topic,
-            Parser::parse_course_requirement,
-            Parser::parse_consent_of_entity_requirement,
-        ])
-    }
-
-    fn parse_course_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
+    fn parse_lone_course_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
         Ok(self
             .parse_course()?
             .map(|(topic, number)| Requirement::Course(format!("{topic} {number}"))))
@@ -364,15 +385,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_consent_of_entity_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
-        if !self.eat_multiple(&["consent", "of"]) {
+        if !self.eat_multiple(&["consent", "of"]) && !self.eat_multiple(&["Consent", "of"]) {
             return Ok(None);
         }
         self.eat("the");
         let entity = match self.bump() {
             "department" | "Department" => Entity::Department,
             "instructor" | "Instructor" => Entity::Instructor,
+            "college" | "College" => Entity::College,
             _ => {
-                return Err(ParseError::Unspecified);
+                return Err(ParseError::Unrecognized);
             }
         };
         Ok(Some(Requirement::ConsentOf(entity)))
@@ -416,6 +438,7 @@ mod tests {
             "ACCTG 211 or 311 and ACCTG 222 or 322",
             expect!["all(any(ACCTG 211, ACCTG 311), any(ACCTG 222, ACCTG 322))"],
         );
+        // FIXME: wrong
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, or EASIA 325",
             expect!["all(RELIG 240, RELIG 343, EASIA 223, EASIA 323)"],
@@ -439,6 +462,14 @@ mod tests {
         check(
             "One of: CMPUT 175 or CMPUT 275",
             expect!["any(CMPUT 175, CMPUT 275)"],
+        );
+        check(
+            "IMIN 200 and consent of instructor",
+            expect!["all(IMIN 200, consent of instructor)"],
+        );
+        check(
+            "One course in Christian theology and permission of the College",
+            expect![],
         );
         check(
             "One of: RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of \
