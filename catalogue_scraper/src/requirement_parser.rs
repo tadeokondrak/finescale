@@ -1,5 +1,5 @@
 use std::fmt::{self, Write};
-use std::iter;
+use std::{iter, mem};
 
 mod data;
 
@@ -22,33 +22,33 @@ mod data;
 // A comma binds tighter than a semicolon.
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Course {
-    topic: String,
-    number: String,
+pub struct Course<'a> {
+    topic: &'a str,
+    number: &'a str,
 }
 
-impl fmt::Display for Course {
+impl fmt::Display for Course<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.topic, self.number)
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum Expr {
+pub enum Expr<'a> {
     Equivalent,
-    And(Box<[Expr; 2]>),
-    Or(Box<[Expr; 2]>),
-    Any(Vec<Expr>),
-    All(Vec<Expr>),
-    Course(Course),
+    And(Box<[Expr<'a>; 2]>),
+    Or(Box<[Expr<'a>; 2]>),
+    Any_(Vec<Expr<'a>>),
+    All_(Vec<Expr<'a>>),
+    Course(Course<'a>),
     ConsentOf(Entity),
 }
 
-impl fmt::Debug for Expr {
+impl fmt::Debug for Expr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Expr::Equivalent => f.write_str("(equivalent)"),
-            Expr::Any(args) => {
+            Expr::Any_(args) => {
                 write!(f, "(any")?;
                 for arg in args {
                     write!(f, " {arg:?}")?;
@@ -56,7 +56,7 @@ impl fmt::Debug for Expr {
                 f.write_char(')')?;
                 Ok(())
             }
-            Expr::All(args) => {
+            Expr::All_(args) => {
                 write!(f, "(all")?;
                 for arg in args {
                     write!(f, " {arg:?}")?;
@@ -98,25 +98,26 @@ impl fmt::Display for Entity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseError {
+pub enum ParseError<'a> {
     Unrecognized,
-    DidNotReachEndOfInput { parsed_so_far: Expr },
+    DidNotReachEndOfInput { parsed_so_far: Expr<'a> },
 }
 
-pub fn parse_requirement(s: &str) -> Result<Expr, ParseError> {
-    let tokens = tokenize(s).collect::<Vec<_>>();
-    let mut parser = Parser {
+pub fn parse_requirement<'a>(s: &'a str) -> Result<Expr<'a>, ParseError<'a>> {
+    let tokens: Vec<&'a str> = tokenize(s).collect::<Vec<_>>();
+    let parser = Parser::<'a, '_> {
         tokens: &tokens,
         pos: 0,
     };
-    let req = parser
-        .parse_expr_one(PrecedenceLevel::BareCommaList)
+    let ctx = Context::new(parser, ());
+    let ((), expr) = ctx
+        .parse_expr(PrecedenceLevel::BareCommaList)
+        .parsers
+        .into_iter()
+        .map(|(expr, _)| expr)
+        .nth(0)
         .ok_or(ParseError::Unrecognized)?;
-    if !parser.at_eof() {
-        Err(ParseError::DidNotReachEndOfInput { parsed_so_far: req })
-    } else {
-        Ok(req)
-    }
+    Ok(expr)
 }
 
 fn tokenize(mut s: &str) -> impl Iterator<Item = &str> {
@@ -186,12 +187,13 @@ fn tokenize(mut s: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-struct Parser<'a> {
-    tokens: &'a [&'a str],
+#[derive(Clone)]
+struct Parser<'a, 'b> {
+    tokens: &'b [&'a str],
     pos: usize,
 }
 
-impl<'a> Parser<'a> {
+impl<'a, 'b> Parser<'a, 'b> {
     fn at_eof(&self) -> bool {
         self.pos >= self.tokens.len()
     }
@@ -235,13 +237,6 @@ impl<'a> Parser<'a> {
 
     fn current_token(&self) -> &'a str {
         self.nth_token(0)
-    }
-
-    fn fork(&self) -> Parser<'a> {
-        Parser {
-            tokens: self.tokens,
-            pos: self.pos,
-        }
     }
 
     fn eat_any(&mut self, tokens: &[&str]) -> bool {
@@ -297,68 +292,166 @@ impl PrecedenceLevel {
     }
 }
 
+struct Context<'a, 'b, T> {
+    parsers: Vec<(T, Parser<'a, 'b>)>,
+}
+
+impl<'a, 'b, T> Default for Context<'a, 'b, T> {
+    fn default() -> Self {
+        Self {
+            parsers: Default::default(),
+        }
+    }
+}
+
+impl<'a, 'b, T: Clone> Context<'a, 'b, T> {
+    fn new(parser: Parser<'a, 'b>, data: T) -> Context<'a, 'b, T> {
+        Context {
+            parsers: vec![(data, parser)],
+        }
+    }
+
+    fn function_0<U>(self, f: impl FnOnce(&mut Parser, T) -> U) -> Context<'a, 'b, U> {
+        todo!()
+    }
+
+    fn function_1<U, I: IntoIterator<Item = U>>(
+        self,
+        f: impl FnOnce(&mut Parser<'a, 'b>, T) -> I,
+    ) -> Context<'a, 'b, U> {
+        todo!()
+    }
+
+    fn function_2<U>(
+        self,
+        f: impl FnOnce(Context<'a, 'b, T>) -> Context<'a, 'b, U>,
+    ) -> Context<'a, 'b, U> {
+        todo!()
+    }
+
+    fn function_3<U, I: IntoIterator<Item = U>>(
+        self,
+        f: impl FnOnce(&mut Parser<'a, 'b>, T) -> I,
+    ) -> Context<'a, 'b, U> {
+        todo!()
+    }
+
+    fn split<U>(
+        self,
+        fs: &[&dyn Fn(Context<'a, 'b, T>) -> Context<'a, 'b, U>],
+    ) -> Context<'a, 'b, U> {
+        Context {
+            parsers: fs
+                .into_iter()
+                .flat_map(|f| {
+                    self.parsers
+                        .iter()
+                        .cloned()
+                        .flat_map(move |(t, parser)| (f(Context::new(parser, t.clone()))).parsers)
+                })
+                .collect(),
+        }
+    }
+}
+
+fn conv<'a, 'b, T: Clone>(
+    parselet: fn(&mut Parser<'a, 'b>) -> Option<Expr<'a>>,
+) -> impl Fn(Context<'a, 'b, T>) -> Context<'a, 'b, (T, Expr<'a>)> {
+    move |c| Context {
+        parsers: c
+            .parsers
+            .iter()
+            .cloned()
+            .flat_map(|(t, mut parser)| Some(((t, parselet(&mut parser)?), parser)))
+            .collect(),
+    }
+}
+
+impl<'a, 'b, T: Clone> Context<'a, 'b, T> {
+    #[rustfmt::skip]
+    fn parse_expr(
+        self,
+        precedence: PrecedenceLevel,
+    ) -> Context<'a, 'b, (T, Expr<'a>)> {
+        match precedence {
+            PrecedenceLevel::BareCommaList => self.split(&[
+                &conv(Parser::parse_comma_separated_requirement_list),
+                &|c| c.parse_expr(PrecedenceLevel::below(PrecedenceLevel::BareCommaList)),
+            ]),
+            PrecedenceLevel::AndList => self.split(&[
+                &conv(|p| p.parse_expr_list_with_shared_topic(ListMode::All, Expr::All_)),
+                &conv(|p| p.parse_expr_list(ListMode::All, Expr::All_, PrecedenceLevel::OrList, PrecedenceLevel::OrList)),
+                &|c| c.parse_expr(PrecedenceLevel::below(PrecedenceLevel::AndList)),
+            ]),
+            PrecedenceLevel::OrList => self.split(&[
+                &conv(|p| p.parse_expr_list_with_shared_topic(ListMode::Any, Expr::Any_)),
+                &conv(|p| p.parse_expr_list(ListMode::Any, Expr::Any_, PrecedenceLevel::Base, PrecedenceLevel::Base)),
+                &|c| c.parse_expr(PrecedenceLevel::below(PrecedenceLevel::OrList)),
+            ]),
+            PrecedenceLevel::AndExpr => self.split(&[
+                &conv(|p| p.parse_binary_expr_with_shared_topic(ListMode::All, Expr::And)),
+                &conv(|p| p.parse_binary_expr(PrecedenceLevel::AndExpr, ListMode::All, Expr::And)),
+                &|c| c.parse_expr(PrecedenceLevel::below(PrecedenceLevel::AndExpr)),
+            ]),
+            PrecedenceLevel::OrExpr => self.split(&[
+                &conv(|p| p.parse_binary_expr_with_shared_topic(ListMode::Any, Expr::Or)),
+                &conv(|p| p.parse_binary_expr(PrecedenceLevel::OrExpr, ListMode::Any, Expr::Or)),
+                &|c| c.parse_expr(PrecedenceLevel::below(PrecedenceLevel::OrExpr)),
+            ]),
+            PrecedenceLevel::Base => self.split(&[
+                &conv(Parser::parse_prefixed_binary_or_expr_with_shared_topic),
+                &conv(|p| p.parse_prefixed_or_expr_list(PrecedenceLevel::Base, PrecedenceLevel::Base)),
+                &conv(|p| p.parse_prefixed_binary_or_expr(PrecedenceLevel::OrExpr)),
+                &conv(Parser::parse_lone_course_expr),
+                &conv(Parser::parse_consent_of_entity_expr),
+                &conv(Parser::parse_equivalent_expr),
+            ]),
+        }
+    }
+
+    fn parse_comma_separated_list(self) -> Context<'a, 'b, (T, Expr<'a>)> {
+        self.parse_expr(PrecedenceLevel::OrExpr)
+            .function_1(|p, lhs| if p.eat(",") { Some(lhs) } else { None })
+            .function_2(|c| c.parse_comma_separated_list())
+            .function_0(|_, ((data, lhs), rhs)| (data, Expr::And(Box::new([lhs, rhs]))))
+
+        //let mut reqs = vec![first_req];
+        //while self.eat(",") {
+        //    let next_req = self.parse_expr(PrecedenceLevel::OrExpr);
+        //    reqs.push(next_req);
+        //}
+        //Some(reqs)
+        //    .filter(|reqs| reqs.len() >= 2 && self.at_eof())
+        //    .map(Expr::All)
+    }
+}
+
 // Need X and Y to bind tighter than X, and Y
 
-impl<'a> Parser<'a> {
-    fn parse_expr_one(&mut self, precedence: PrecedenceLevel) -> Option<Expr> {
+impl<'a, 'b> Parser<'a, 'b> {
+    fn parse_expr_one(&mut self, precedence: PrecedenceLevel) -> Option<Expr<'a>> {
         self.parse_expr(precedence).into_iter().nth(0)
     }
 
-    #[rustfmt::skip]
-    fn parse_expr(
-        &mut self,
-        precedence: PrecedenceLevel,
-    ) -> Vec<Expr> {
-        fn c<'a>(
-            parser: fn(&mut Parser<'a>) -> Option<Expr>,
-        ) -> impl Fn(&mut Parser<'a>) -> Vec<Expr> {
-            move |p| Vec::from_iter(parser(p))
-        }
-
-        match precedence {
-            PrecedenceLevel::BareCommaList => self.run_parsers(&[
-                &c(Parser::parse_comma_separated_requirement_list),
-                &c(|p| p.parse_expr_one(PrecedenceLevel::below(PrecedenceLevel::BareCommaList))),
-            ]),
-            PrecedenceLevel::AndList => self.run_parsers(&[
-                &c(|p| p.parse_expr_list_with_shared_topic(ListMode::All, Expr::All)),
-                &c(|p| p.parse_expr_list(ListMode::All, Expr::All, PrecedenceLevel::OrList, PrecedenceLevel::OrList)),
-                &c(|p| p.parse_expr_one(PrecedenceLevel::below(PrecedenceLevel::OrList))),
-            ]),
-            PrecedenceLevel::OrList => self.run_parsers(&[
-                &c(|p| p.parse_expr_list_with_shared_topic(ListMode::Any, Expr::Any)),
-                &c(|p| p.parse_expr_list(ListMode::Any, Expr::Any, PrecedenceLevel::Base, PrecedenceLevel::Base)),
-                &c(|p| p.parse_expr_one(PrecedenceLevel::below(PrecedenceLevel::OrList))),
-            ]),
-            PrecedenceLevel::AndExpr => self.run_parsers(&[
-                &c(|p| p.parse_binary_expr_with_shared_topic(ListMode::All, Expr::And)),
-                &c(|p| p.parse_binary_expr(PrecedenceLevel::AndExpr, ListMode::All, Expr::And)),
-                &c(|p| p.parse_expr_one(PrecedenceLevel::below(PrecedenceLevel::AndExpr))),
-            ]),
-            PrecedenceLevel::OrExpr => self.run_parsers(&[
-                &c(|p| p.parse_binary_expr_with_shared_topic(ListMode::Any, Expr::Or)),
-                &c(|p| p.parse_binary_expr(PrecedenceLevel::OrExpr, ListMode::Any, Expr::Or)),
-                &c(|p| p.parse_expr_one(PrecedenceLevel::below(PrecedenceLevel::OrExpr))),
-            ]),
-            PrecedenceLevel::Base => self.run_parsers(&[
-                &c(Parser::parse_prefixed_binary_or_expr_with_shared_topic),
-                &c(|p| p.parse_prefixed_or_expr_list(PrecedenceLevel::Base, PrecedenceLevel::Base)),
-                &c(|p| p.parse_prefixed_binary_or_expr(PrecedenceLevel::OrExpr)),
-                &c(Parser::parse_lone_course_expr),
-                &c(Parser::parse_consent_of_entity_expr),
-                &c(Parser::parse_equivalent_expr),
-            ]),
-        }
+    fn parse_expr(&mut self, precedence: PrecedenceLevel) -> Vec<Expr<'a>> {
+        Context::new(
+            mem::replace(
+                self,
+                Parser {
+                    tokens: &[],
+                    pos: 0,
+                },
+            ),
+            (),
+        )
+        .parse_expr(precedence)
+        .parsers
+        .into_iter()
+        .map(|(((), expr), _)| expr)
+        .collect()
     }
 
-    fn run_parsers(&mut self, parsers: &[&dyn Fn(&mut Parser<'a>) -> Vec<Expr>]) -> Vec<Expr> {
-        parsers
-            .into_iter()
-            .flat_map(|parser| parser(&mut self.fork()))
-            .collect()
-    }
-
-    fn parse_prefixed_binary_or_expr(&mut self, precedence: PrecedenceLevel) -> Option<Expr> {
+    fn parse_prefixed_binary_or_expr(&mut self, precedence: PrecedenceLevel) -> Option<Expr<'a>> {
         if !self.eat_any_of_or_one_of() {
             return None;
         }
@@ -369,8 +462,8 @@ impl<'a> Parser<'a> {
         &mut self,
         precedence: PrecedenceLevel,
         list_mode: ListMode,
-        wrapper: fn(Box<[Expr; 2]>) -> Expr,
-    ) -> Option<Expr> {
+        wrapper: fn(Box<[Expr<'a>; 2]>) -> Expr<'a>,
+    ) -> Option<Expr<'a>> {
         let Some(lhs) = self.parse_expr_one(PrecedenceLevel::below(precedence)) else {
             return None;
         };
@@ -386,8 +479,8 @@ impl<'a> Parser<'a> {
     fn parse_binary_expr_with_shared_topic(
         &mut self,
         list_mode: ListMode,
-        wrapper: fn(Box<[Expr; 2]>) -> Expr,
-    ) -> Option<Expr> {
+        wrapper: fn(Box<[Expr<'a>; 2]>) -> Expr<'a>,
+    ) -> Option<Expr<'a>> {
         let Some(lhs) = self.parse_course() else {
             return None;
         };
@@ -401,14 +494,14 @@ impl<'a> Parser<'a> {
         self.bump();
 
         let rhs = Course {
-            topic: lhs.topic.clone(),
-            number: number.to_owned(),
+            topic: lhs.topic,
+            number: number,
         };
 
         Some(wrapper(Box::new([Expr::Course(lhs), Expr::Course(rhs)])))
     }
 
-    fn parse_prefixed_binary_or_expr_with_shared_topic(&mut self) -> Option<Expr> {
+    fn parse_prefixed_binary_or_expr_with_shared_topic(&mut self) -> Option<Expr<'a>> {
         if !self.eat_any_of_or_one_of() {
             return None;
         }
@@ -419,36 +512,32 @@ impl<'a> Parser<'a> {
         &mut self,
         lhs_precedence: PrecedenceLevel,
         rhs_precedence: PrecedenceLevel,
-    ) -> Option<Expr> {
+    ) -> Option<Expr<'a>> {
         if !self.eat_any_of_or_one_of() {
             return None;
         }
-        self.parse_expr_list(ListMode::Any, Expr::Any, lhs_precedence, rhs_precedence)
+        self.parse_expr_list(ListMode::Any, Expr::Any_, lhs_precedence, rhs_precedence)
     }
 
-    fn parse_comma_separated_requirement_list(&mut self) -> Option<Expr> {
-        let Some(first_req) = self.parse_expr_one(PrecedenceLevel::OrExpr) else {
-            return None;
-        };
+    fn parse_comma_separated_requirement_list(&mut self) -> Option<Expr<'a>> {
+        let first_req = self.parse_expr_one(PrecedenceLevel::OrExpr)?;
         let mut reqs = vec![first_req];
         while self.eat(",") {
-            let Some(next_req) = self.parse_expr_one(PrecedenceLevel::OrExpr) else {
-                break;
-            };
+            let next_req = self.parse_expr_one(PrecedenceLevel::OrExpr)?;
             reqs.push(next_req);
         }
         Some(reqs)
             .filter(|reqs| reqs.len() >= 2 && self.at_eof())
-            .map(Expr::All)
+            .map(Expr::All_)
     }
 
     fn parse_expr_list(
         &mut self,
         list_mode: ListMode,
-        wrapper: fn(Vec<Expr>) -> Expr,
+        wrapper: fn(Vec<Expr<'a>>) -> Expr,
         lhs_precedence: PrecedenceLevel,
         rhs_precedence: PrecedenceLevel,
-    ) -> Option<Expr> {
+    ) -> Option<Expr<'a>> {
         let Some(first_req) = self.parse_expr_one(lhs_precedence) else {
             return None;
         };
@@ -493,8 +582,8 @@ impl<'a> Parser<'a> {
     fn parse_expr_list_with_shared_topic(
         &mut self,
         list_mode: ListMode,
-        wrapper: fn(Vec<Expr>) -> Expr,
-    ) -> Option<Expr> {
+        wrapper: fn(Vec<Expr<'a>>) -> Expr<'a>,
+    ) -> Option<Expr<'a>> {
         self.parse_list_of_courses_with_shared_topic(list_mode)
             .map(|courses| courses.into_iter().map(Expr::Course).collect())
             .map(wrapper)
@@ -503,7 +592,7 @@ impl<'a> Parser<'a> {
     fn parse_list_of_courses_with_shared_topic(
         &mut self,
         list_mode: ListMode,
-    ) -> Option<Vec<Course>> {
+    ) -> Option<Vec<Course<'a>>> {
         let Some(Course {
             topic,
             number: first_number,
@@ -513,7 +602,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut courses = vec![Course {
-            topic: topic.clone(),
+            topic: topic,
             number: first_number,
         }];
 
@@ -537,8 +626,8 @@ impl<'a> Parser<'a> {
             self.bump();
 
             courses.push(Course {
-                topic: topic.clone(),
-                number: next_number.to_owned(),
+                topic: topic,
+                number: next_number,
             });
 
             if matched1 || matched2 {
@@ -547,16 +636,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_lone_course_expr(&mut self) -> Option<Expr> {
+    fn parse_lone_course_expr(&mut self) -> Option<Expr<'a>> {
         self.parse_course().map(Expr::Course)
     }
 
-    fn parse_course(&mut self) -> Option<Course> {
-        let mut course_topic = self.current_token().to_owned();
-        if data::UALBERTA_TOPICS_WITH_SPACES_PREFIXES.contains(&course_topic.as_str()) {
-            course_topic = format!("{} {}", self.nth_token(0), self.nth_token(1));
+    fn parse_course(&mut self) -> Option<Course<'a>> {
+        let course_topic = self.current_token();
+        if data::UALBERTA_TOPICS_WITH_SPACES_PREFIXES.contains(&course_topic) {
+            // hack!!
             self.bump();
-        } else if !data::UALBERTA_TOPICS.contains(&course_topic.as_str()) {
+        } else if !data::UALBERTA_TOPICS.contains(&course_topic) {
             return None;
         }
         self.bump();
@@ -569,11 +658,11 @@ impl<'a> Parser<'a> {
 
         Some(Course {
             topic: course_topic,
-            number: course_number.to_owned(),
+            number: course_number,
         })
     }
 
-    fn parse_consent_of_entity_expr(&mut self) -> Option<Expr> {
+    fn parse_consent_of_entity_expr(&mut self) -> Option<Expr<'a>> {
         if !self.eat_multiple(&["consent", "of"])
             && !self.eat_multiple(&["Consent", "of"])
             && !self.eat_multiple(&["permission", "of"])
@@ -591,7 +680,7 @@ impl<'a> Parser<'a> {
         Some(Expr::ConsentOf(entity))
     }
 
-    fn parse_equivalent_expr(&mut self) -> Option<Expr> {
+    fn parse_equivalent_expr(&mut self) -> Option<Expr<'a>> {
         if !self.eat("equivalent") {
             return None;
         }
@@ -640,27 +729,21 @@ mod tests {
     fn parse_consent_of_the_department_requirement() {
         check(
             "consent of the department",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (consent of department) })"],
+            expect!["(consent of department)"],
         );
     }
 
     #[test]
     fn parse_simple_course_requirement() {
-        check(
-            "CMPUT 174",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (CMPUT 174) })"],
-        );
+        check("CMPUT 174", expect!["(CMPUT 174)"]);
     }
 
     #[test]
     fn parse_any_of_course_requirements() {
-        check(
-            "CMPUT 174 or CMPUT 274",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (CMPUT 174) })"],
-        );
+        check("CMPUT 174 or CMPUT 274", expect!["(CMPUT 174)"]);
         check(
             "CMPUT 174, CMPUT 274, CMPUT 175 or CMPUT 275",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (CMPUT 174) })"],
+            expect!["(CMPUT 174)"],
         );
     }
 
@@ -668,7 +751,7 @@ mod tests {
     fn parse_any_of_course_requirements_with_prefix() {
         check(
             "one of CMPUT 175 or 275",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (or (CMPUT 175) (CMPUT 275)) })"],
+            expect!["(or (CMPUT 175) (CMPUT 275))"],
         );
         check(
             "one of CMPUT 175 or CMPUT 275",
@@ -682,81 +765,51 @@ mod tests {
 
     #[test]
     fn parse_any_of_course_requirements_without_repeated_topic() {
-        check(
-            "CMPUT 174 or 274",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (or (CMPUT 174) (CMPUT 274)) })"],
-        );
+        check("CMPUT 174 or 274", expect!["(any (CMPUT 174) (CMPUT 274))"]);
     }
 
     #[test]
     fn parse_all_of_course_requirements() {
-        check(
-            "ECON 101 and ECON 102",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 101) })"],
-        );
+        check("ECON 101 and ECON 102", expect!["(ECON 101)"]);
     }
 
     #[test]
     fn parse_all_of_course_requirements_without_repeated_topic() {
-        check(
-            "ECON 101 and 102",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (all (ECON 101) (ECON 102)) })"],
-        );
+        check("ECON 101 and 102", expect!["(all (ECON 101) (ECON 102))"]);
     }
 
     #[test]
     fn parse_top_level_comma_separated_list() {
-        check(
-            "ACCTG 614, FIN 501",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ACCTG 614) })"],
-        );
-        check(
-            "ACCTG 614, ACCTG 610, FIN 501",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ACCTG 614) })"],
-        );
+        check("ACCTG 614, FIN 501", expect!["(ACCTG 614)"]);
+        check("ACCTG 614, ACCTG 610, FIN 501", expect!["(ACCTG 614)"]);
         check(
             "ACCTG 614 or 610, FIN 501 or 503",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (or (ACCTG 614) (ACCTG 610)) })"],
+            expect!["(any (ACCTG 614) (ACCTG 610))"],
         );
     }
 
     #[test]
     fn misc_broken() {
-        check(
-            "ECON 109 and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
-        );
-        check(
-            "ECON 109, and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
-        );
-        check(
-            "ECON 109, ECON 110 and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
-        );
-        check(
-            "ECON 109, ECON 110, and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
-        );
-        check(
-            "MATH 156 or equivalent",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (MATH 156) })"],
-        );
+        check("ECON 109 and MATH 156", expect!["(ECON 109)"]);
+        check("ECON 109, and MATH 156", expect!["(ECON 109)"]);
+        check("ECON 109, ECON 110 and MATH 156", expect!["(ECON 109)"]);
+        check("ECON 109, ECON 110, and MATH 156", expect!["(ECON 109)"]);
+        check("MATH 156 or equivalent", expect!["(MATH 156)"]);
         check(
             "ECON 109, and MATH 156 or equivalent",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
+            expect!["(ECON 109)"],
         );
         check(
             "ECON 109, ECON 281, 282 and 299 or equivalent",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
+            expect!["(ECON 109)"],
         );
         check(
             "ECON 109, ECON 281, 282 and 299 or equivalent, and MATH 156 or equivalent",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
+            expect!["(ECON 109)"],
         );
         check(
             "ECON 281, 282 and 299 or equivalent, and MATH 156 or equivalent",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (all (ECON 281) (ECON 282) (ECON 299)) })"],
+            expect!["(all (ECON 281) (ECON 282) (ECON 299))"],
         );
     }
 
@@ -765,19 +818,19 @@ mod tests {
     fn misc_working() {
         check(
             "ACCTG 211 or 311 and ACCTG 222 or 322",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (or (ACCTG 211) (ACCTG 311)) })"],
+            expect!["(any (ACCTG 211) (ACCTG 311))"],
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, or EASIA 325",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (RELIG 240) })"],
+            expect!["(RELIG 240)"],
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, and EASIA 325",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (RELIG 240) })"],
+            expect!["(RELIG 240)"],
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of Instructor",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (RELIG 240) })"],
+            expect!["(RELIG 240)"],
         );
         check(
             "one of CMPUT 175 or CMPUT 275",
@@ -785,7 +838,7 @@ mod tests {
         );
         check(
             "IMIN 200 and consent of instructor",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (IMIN 200) })"],
+            expect!["(IMIN 200)"],
         );
         check(
             "One of: RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of Instructor",
@@ -793,29 +846,29 @@ mod tests {
         );
         check(
             "ECON 281, 282 and 299",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (all (ECON 281) (ECON 282) (ECON 299)) })"],
+            expect!["(all (ECON 281) (ECON 282) (ECON 299))"],
         );
-        check("ECON 281, and MATH 156", expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 281) })"]);
+        check("ECON 281, and MATH 156", expect!["(ECON 281)"]);
         check(
             "ECON 281 and ECON 282, and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 281) })"],
+            expect!["(ECON 281)"],
         );
         check(
             "ECON 281, 282 and 299, and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (all (ECON 281) (ECON 282) (ECON 299)) })"],
+            expect!["(all (ECON 281) (ECON 282) (ECON 299))"],
         );
         check(
             "ECON 109, ECON 281, 282 and 299, and MATH 156",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (ECON 109) })"],
+            expect!["(ECON 109)"],
         );
         check(
             "ACCTG 614 or 610, FIN 501 or 503",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (or (ACCTG 614) (ACCTG 610)) })"],
+            expect!["(any (ACCTG 614) (ACCTG 610))"],
         );
-        check("PL SC 345", expect!["Err(DidNotReachEndOfInput { parsed_so_far: (PL SC 345) })"]);
+        check("PL SC 345", expect!["(PL 345)"]);
         check(
             "BIOCH 200, PL SC 345, or consent of instructor",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (BIOCH 200) })"],
+            expect!["(BIOCH 200)"],
         );
         check(
             "one of PHYS 124, PHYS 144, or EN PH 131",
@@ -827,7 +880,7 @@ mod tests {
         );
         check(
             "PHYS 130 and PHYS 208 or 271",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (PHYS 130) })"],
+            expect!["(PHYS 130)"],
         );
         check(
             "one of PHYS 124, PHYS 144, or EN PH 131, and one of PHYS 126, PHYS 146, or PHYS 130 and PHYS 208 or 271",
@@ -835,7 +888,7 @@ mod tests {
         );
         check(
             "MATH 115, 118, 136, 146 or 156, and one of PHYS 124, PHYS 144, or EN PH 131, and one of PHYS 126, PHYS 146, or PHYS 130 and PHYS 208 or 271",
-            expect!["Err(DidNotReachEndOfInput { parsed_so_far: (MATH 115) })"],
+            expect!["(any (MATH 115) (MATH 118) (MATH 136) (MATH 146) (MATH 156))"],
         );
     }
 }
