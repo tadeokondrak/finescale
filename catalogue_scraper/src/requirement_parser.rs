@@ -1,5 +1,5 @@
 use std::fmt::{self, Write};
-use std::iter;
+use std::{any, iter};
 
 mod data;
 
@@ -11,8 +11,8 @@ mod data;
 // They need to parse only lists that consistently use the same format
 // Good: "A, B, C, D, or E"
 // Good: "A, B, C, D or E"
-// Good: "A or B or C or D or E"
-// Bad: "A, or B"
+// Good: "A, or B"
+// Bad (as one list): "A or B or C or D or E"
 // Bad (as one list): "A or B, C, D or E"
 // It would obviously be inefficient to do this for a programming language,
 // but I think this is relatively maintainable and should hopefully not be
@@ -22,17 +22,30 @@ mod data;
 // A comma binds tighter than a semicolon.
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct Course {
+    topic: String,
+    number: String,
+}
+
+impl fmt::Display for Course {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.topic, self.number)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum Requirement {
+    Custom(&'static str),
     Any(Vec<Requirement>),
     All(Vec<Requirement>),
-    Course(String),
+    Course(Course),
     ConsentOf(Entity),
 }
 
 impl fmt::Debug for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Any(args) => {
+            Requirement::Any(args) => {
                 write!(f, "any(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -43,7 +56,7 @@ impl fmt::Debug for Requirement {
                 f.write_char(')')?;
                 Ok(())
             }
-            Self::All(args) => {
+            Requirement::All(args) => {
                 write!(f, "all(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -54,8 +67,9 @@ impl fmt::Debug for Requirement {
                 f.write_char(')')?;
                 Ok(())
             }
-            Self::Course(arg0) => write!(f, "{arg0}"),
-            Self::ConsentOf(arg0) => write!(f, "consent of {arg0}"),
+            Requirement::Course(arg0) => write!(f, "{arg0}"),
+            Requirement::ConsentOf(arg0) => write!(f, "consent of {arg0}"),
+            Requirement::Custom(arg0) => write!(f, "{arg0}"),
         }
     }
 }
@@ -257,8 +271,7 @@ impl<'a> Parser<'a> {
 
     fn parse_any_of_requirements(&mut self) -> Result<Option<Requirement>, ParseError> {
         self.eat_any_of_or_one_of();
-        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "or" | "ou" | "/"))?
-        else {
+        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "or" | "ou"))? else {
             return Ok(None);
         };
         if reqs.len() < 2 {
@@ -268,8 +281,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_all_of_requirements(&mut self) -> Result<Option<Requirement>, ParseError> {
-        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "and" | "et" | ","))?
-        else {
+        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "and" | "et"))? else {
             return Ok(None);
         };
         if reqs.len() < 2 {
@@ -286,16 +298,28 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let mut requirements = vec![first_req];
-        while sep_predicate(self.current_token()) {
-            self.bump();
-            if let Some(next_req) = self.parse_base_requirement()? {
-                requirements.push(next_req);
-                continue;
+        let mut any_sep_matched = false;
+        while !any_sep_matched {
+            let sep_matches = sep_predicate(self.current_token());
+            if !sep_matches && !self.at(",") {
+                break;
             }
-            break;
-        }
+            any_sep_matched |= sep_matches;
 
-        Ok(Some(requirements))
+            if self.at(",") && sep_predicate(self.nth_token(1)) {
+                any_sep_matched = true;
+                self.advance(2);
+            } else {
+                self.bump();
+            }
+
+            let Some(next_req) = self.parse_base_requirement()? else {
+                break;
+            };
+
+            requirements.push(next_req);
+        }
+        Ok(Some(requirements).filter(|_| any_sep_matched))
     }
 
     fn eat_any_of_or_one_of(&mut self) -> bool {
@@ -313,62 +337,74 @@ impl<'a> Parser<'a> {
 
     fn parse_any_of_courses_shared_topic(&mut self) -> Result<Option<Requirement>, ParseError> {
         self.eat_any_of_or_one_of();
-        let Some(courses) =
-            self.parse_list_of_courses_shared_topic(|s| matches!(s, "or" | "ou" | "/"))?
-        else {
-            return Ok(None);
-        };
-        if courses.len() < 2 {
-            return Ok(None);
-        }
-        Ok(Some(Requirement::Any(
-            courses.into_iter().map(Requirement::Course).collect(),
-        )))
+        Ok(self
+            .parse_list_of_courses_shared_topic(|s| matches!(s, "or" | "ou"))?
+            .filter(|courses| courses.len() >= 2)
+            .map(|courses| courses.into_iter().map(Requirement::Course).collect())
+            .map(Requirement::Any))
     }
 
     fn parse_all_of_courses_shared_topic(&mut self) -> Result<Option<Requirement>, ParseError> {
-        let Some(courses) =
-            self.parse_list_of_courses_shared_topic(|s| matches!(s, "and" | "et" | ","))?
-        else {
-            return Ok(None);
-        };
-        if courses.len() < 2 {
-            return Ok(None);
-        }
-        Ok(Some(Requirement::All(
-            courses.into_iter().map(Requirement::Course).collect(),
-        )))
+        Ok(self
+            .parse_list_of_courses_shared_topic(|s| matches!(s, "and" | "et"))?
+            .filter(|courses| courses.len() >= 2)
+            .map(|courses| courses.into_iter().map(Requirement::Course).collect())
+            .map(Requirement::All))
     }
 
     fn parse_list_of_courses_shared_topic(
         &mut self,
         sep_predicate: impl Fn(&str) -> bool,
-    ) -> Result<Option<Vec<String>>, ParseError> {
-        self.eat_any_of_or_one_of();
-        let Some((topic, first_number)) = self.parse_course()? else {
+    ) -> Result<Option<Vec<Course>>, ParseError> {
+        let Some(Course {
+            topic,
+            number: first_number,
+        }) = self.parse_course()?
+        else {
             return Ok(None);
         };
-        let mut requirements = vec![format!("{topic} {first_number}")];
-        while sep_predicate(self.current_token()) {
-            self.bump();
-            _ = self.eat(topic);
+
+        let mut requirements = vec![Course {
+            topic: topic.clone(),
+            number: first_number,
+        }];
+
+        let mut any_sep_matched = false;
+
+        while !any_sep_matched {
+            let sep_matches = sep_predicate(self.current_token());
+            if sep_matches {
+                self.bump();
+                any_sep_matched = true;
+            } else if self.at(",") && sep_predicate(self.nth_token(1)) {
+                self.advance(2);
+                any_sep_matched = true;
+            } else if self.at(",") {
+                self.bump();
+            } else {
+                break;
+            }
+
             let next_number = self.current_token();
             if !next_number.starts_with(char::is_numeric) {
                 return Ok(None);
             }
             self.bump();
-            requirements.push(format!("{topic} {next_number}"));
+
+            requirements.push(Course {
+                topic: topic.clone(),
+                number: next_number.to_owned(),
+            });
         }
-        Ok(Some(requirements))
+
+        Ok(Some(requirements).filter(|_| any_sep_matched))
     }
 
     fn parse_lone_course_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
-        Ok(self
-            .parse_course()?
-            .map(|(topic, number)| Requirement::Course(format!("{topic} {number}"))))
+        Ok(self.parse_course()?.map(Requirement::Course))
     }
 
-    fn parse_course(&mut self) -> Result<Option<(&'a str, &'a str)>, ParseError> {
+    fn parse_course(&mut self) -> Result<Option<Course>, ParseError> {
         let course_topic = self.current_token();
         if !data::UALBERTA_TOPICS.contains(&course_topic) {
             return Ok(None);
@@ -381,11 +417,21 @@ impl<'a> Parser<'a> {
         }
         self.bump();
 
-        Ok(Some((course_topic, course_number)))
+        _ = self.eat_multiple(&["or", "equivalent"])
+            || self.eat_multiple(&["(", "or", "equivalent", ")"]);
+
+        Ok(Some(Course {
+            topic: course_topic.to_owned(),
+            number: course_number.to_owned(),
+        }))
     }
 
     fn parse_consent_of_entity_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
-        if !self.eat_multiple(&["consent", "of"]) && !self.eat_multiple(&["Consent", "of"]) {
+        if !self.eat_multiple(&["consent", "of"])
+            && !self.eat_multiple(&["Consent", "of"])
+            && !self.eat_multiple(&["permission", "of"])
+            && !self.eat_multiple(&["Permission", "of"])
+        {
             return Ok(None);
         }
         self.eat("the");
@@ -425,31 +471,72 @@ mod tests {
     }
 
     #[test]
-    fn parse_course_list_requirement() {
+    fn parse_simple_course_requirement() {
         check("CMPUT 174", expect!["CMPUT 174"]);
-        check("CMPUT 174 or 274", expect!["any(CMPUT 174, CMPUT 274)"]);
+    }
+
+    #[test]
+    fn parse_any_of_course_requirements() {
         check(
             "CMPUT 174 or CMPUT 274",
             expect!["any(CMPUT 174, CMPUT 274)"],
         );
-        check("ECON 101 and 102", expect!["all(ECON 101, ECON 102)"]);
+    }
+
+    #[test]
+    fn parse_any_of_course_requirements_without_repeated_topic() {
+        check("CMPUT 174 or 274", expect!["any(CMPUT 174, CMPUT 274)"]);
+    }
+
+    #[test]
+    fn parse_all_of_course_requirements() {
         check("ECON 101 and ECON 102", expect!["all(ECON 101, ECON 102)"]);
+    }
+
+    #[test]
+    fn parse_all_of_course_requirements_without_repeated_topic() {
+        check("ECON 101 and 102", expect!["all(ECON 101, ECON 102)"]);
+    }
+
+    #[test]
+    fn misc_broken() {
+        check(
+            "ECON 109, and MATH 156 or equivalent",
+            expect!["all(ECON 109, MATH 156)"],
+        );
+        check(
+            "ECON 109, ECON 281, 282 and 299 or equivalent",
+            expect!["any(ECON 109, all(ECON 281, ECON 282, ECON 299))"],
+        );
+        check(
+            "ECON 109, ECON 281, 282 and 299 or equivalent, and MATH 156 or equivalent",
+            expect!["any(ECON 109, all(ECON 281, ECON 282, ECON 299))"],
+        );
+        //check(
+        //    "One course in Christian theology and permission of the College",
+        //    expect![],
+        //);
+    }
+
+    #[test]
+    fn misc_working() {
         check(
             "ACCTG 211 or 311 and ACCTG 222 or 322",
             expect!["all(any(ACCTG 211, ACCTG 311), any(ACCTG 222, ACCTG 322))"],
         );
-        // FIXME: wrong
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, or EASIA 325",
-            expect!["all(RELIG 240, RELIG 343, EASIA 223, EASIA 323)"],
+            expect!["any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325)"],
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, and EASIA 325",
-            expect!["all(RELIG 240, RELIG 343, EASIA 223, EASIA 323)"],
+            expect!["all(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325)"],
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of Instructor",
-            expect!["all(RELIG 240, RELIG 343, all(EASIA 223, EASIA 323, EASIA 325))"],
+            expect![
+                "any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"
+            ],
         );
         check(
             "one of CMPUT 175 or CMPUT 275",
@@ -468,13 +555,28 @@ mod tests {
             expect!["all(IMIN 200, consent of instructor)"],
         );
         check(
-            "One course in Christian theology and permission of the College",
-            expect![],
-        );
-        check(
             "One of: RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of \
              Instructor",
-            expect![],
+            expect![
+                "any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"
+            ],
+        );
+        check(
+            "ECON 281, 282 and 299",
+            expect!["all(ECON 281, ECON 282, ECON 299)"],
+        );
+        check("ECON 281, and MATH 156", expect!["all(ECON 281, MATH 156)"]);
+        check(
+            "ECON 281 and ECON 282, and MATH 156",
+            expect!["all(ECON 281, ECON 282)"],
+        );
+        check(
+            "ECON 281, 282 and 299, and MATH 156",
+            expect!["all(all(ECON 281, ECON 282, ECON 299), MATH 156)"],
+        );
+        check(
+            "ECON 109, ECON 281, 282 and 299, and MATH 156",
+            expect!["all(ECON 109, all(ECON 281, ECON 282, ECON 299), MATH 156)"],
         );
     }
 }

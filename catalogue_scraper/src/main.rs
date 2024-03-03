@@ -5,7 +5,7 @@ use crate::requirement_extractor::{extract_requirements, RequirementKind};
 use anyhow::{Context, Result};
 use log::{debug, info};
 use rate_limit::UnsyncLimiter;
-use requirement_parser::{parse_requirement, Entity, Requirement};
+use requirement_parser::{parse_requirement, Requirement};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{stdout, ErrorKind, Write};
@@ -165,8 +165,11 @@ impl CourseData<'_> {
 
 fn serialize_req(out: &mut write_json::Object<'_>, req: &Requirement) {
     match req {
+        Requirement::Custom(string) => {
+            out.string("custom", string);
+        }
         Requirement::Course(course) => {
-            out.string("course", course);
+            out.string("course", &course.to_string());
         }
         Requirement::ConsentOf(entity) => {
             out.string("consent_of", &entity.to_string());
@@ -183,6 +186,7 @@ fn serialize_req(out: &mut write_json::Object<'_>, req: &Requirement) {
                 serialize_req(&mut obj.object(), req)
             }
         }
+
     }
 }
 
