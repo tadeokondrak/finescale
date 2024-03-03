@@ -76,6 +76,7 @@ impl fmt::Debug for Requirement {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Entity {
+    Other,
     Department,
     Instructor,
     College,
@@ -87,13 +88,15 @@ impl fmt::Display for Entity {
             Entity::Department => write!(f, "department"),
             Entity::Instructor => write!(f, "instructor"),
             Entity::College => write!(f, "instructor"),
+            Entity::Other => write!(f, "[other]"),
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     Unrecognized,
+    DidNotReachEndOfInput { parsed_so_far: Requirement },
 }
 
 pub fn parse_requirement(s: &str) -> Result<Requirement, ParseError> {
@@ -102,7 +105,14 @@ pub fn parse_requirement(s: &str) -> Result<Requirement, ParseError> {
         tokens: &tokens,
         pos: 0,
     };
-    parser.parse_requirement()
+    let req = parser
+        .parse_requirement(PrecedenceLevel::Highest)?
+        .ok_or(ParseError::Unrecognized)?;
+    if !parser.at_eof() {
+        Err(ParseError::DidNotReachEndOfInput { parsed_so_far: req })
+    } else {
+        Ok(req)
+    }
 }
 
 fn tokenize(mut s: &str) -> impl Iterator<Item = &str> {
@@ -233,26 +243,64 @@ impl<'a> Parser<'a> {
     fn advance_to(&mut self, fork: &Parser<'a>) {
         self.pos = fork.pos
     }
+
+    fn eat_any(&mut self, tokens: &[&str]) -> bool {
+        for token in tokens {
+            if self.eat(token) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
-impl<'a> Parser<'a> {
-    fn parse_requirement(&mut self) -> Result<Requirement, ParseError> {
-        // The otherwise left-recursive rules go here.
-        self.run_parsers(&[
-            Parser::parse_any_of_requirements,
-            Parser::parse_all_of_requirements,
-            Parser::parse_base_requirement,
-        ])?
-        .ok_or(ParseError::Unrecognized)
-    }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PrecedenceLevel {
+    Highest,
+    NoBareCommaList,
+    NoLists,
+    NoAndExpr,
+    Lowest,
+}
 
-    fn parse_base_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
-        self.run_parsers(&[
-            Parser::parse_any_of_courses_shared_topic,
-            Parser::parse_all_of_courses_shared_topic,
-            Parser::parse_lone_course_requirement,
-            Parser::parse_consent_of_entity_requirement,
-        ])
+// Need X and Y to bind tighter than X, and Y
+
+impl<'a> Parser<'a> {
+    fn parse_requirement(
+        &mut self,
+        precedence: PrecedenceLevel,
+    ) -> Result<Option<Requirement>, ParseError> {
+        match precedence {
+            PrecedenceLevel::Highest => self.run_parsers(&[
+                Parser::parse_comma_separated_requirement_list,
+                Parser::parse_and_requirement_list,
+                Parser::parse_or_requirement_list,
+                |this| Parser::parse_requirement(this, PrecedenceLevel::Lowest),
+            ]),
+            PrecedenceLevel::NoBareCommaList => self.run_parsers(&[
+                Parser::parse_and_requirement_list,
+                Parser::parse_or_requirement_list,
+                |this| Parser::parse_requirement(this, PrecedenceLevel::Lowest),
+            ]),
+            PrecedenceLevel::NoLists => self.run_parsers(&[
+                Parser::parse_binary_and_expression,
+                Parser::parse_binary_or_expression,
+                |this| Parser::parse_requirement(this, PrecedenceLevel::Lowest),
+            ]),
+            PrecedenceLevel::NoAndExpr => self
+                .run_parsers(&[Parser::parse_binary_or_expression, |this| {
+                    Parser::parse_requirement(this, PrecedenceLevel::Lowest)
+                }]),
+
+            PrecedenceLevel::Lowest => self.run_parsers(&[
+                Parser::parse_prefixed_or_requirement_list,
+                Parser::parse_and_course_requirement_list_with_shared_topic,
+                Parser::parse_or_course_requirement_list_with_shared_topic,
+                Parser::parse_lone_course_requirement,
+                Parser::parse_consent_of_entity_requirement,
+                Parser::parse_equivalent_requirement,
+            ]),
+        }
     }
 
     fn run_parsers(
@@ -269,9 +317,37 @@ impl<'a> Parser<'a> {
         Ok(None)
     }
 
-    fn parse_any_of_requirements(&mut self) -> Result<Option<Requirement>, ParseError> {
-        self.eat_any_of_or_one_of();
-        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "or" | "ou"))? else {
+    fn parse_binary_and_expression(&mut self) -> Result<Option<Requirement>, ParseError> {
+        let Some(lhs) = self.parse_requirement(PrecedenceLevel::NoAndExpr)? else {
+            return Ok(None);
+        };
+        if !self.eat_any(&["and", "et"]) {
+            return Ok(None);
+        }
+        let Some(rhs) = self.parse_requirement(PrecedenceLevel::NoLists)? else {
+            return Ok(None);
+        };
+        Ok(Some(Requirement::All(vec![lhs, rhs])))
+    }
+
+    fn parse_binary_or_expression(&mut self) -> Result<Option<Requirement>, ParseError> {
+        let Some(lhs) = self.parse_requirement(PrecedenceLevel::Lowest)? else {
+            return Ok(None);
+        };
+        if !self.eat_any(&["or", "ou"]) {
+            return Ok(None);
+        }
+        let Some(rhs) = self.parse_requirement(PrecedenceLevel::NoAndExpr)? else {
+            return Ok(None);
+        };
+        Ok(Some(Requirement::Any(vec![lhs, rhs])))
+    }
+
+    fn parse_prefixed_or_requirement_list(&mut self) -> Result<Option<Requirement>, ParseError> {
+        if !self.eat_any_of_or_one_of() {
+            return Ok(None);
+        }
+        let Some(reqs) = self.parse_list_of_requirements(ListMode::Any)? else {
             return Ok(None);
         };
         if reqs.len() < 2 {
@@ -280,8 +356,26 @@ impl<'a> Parser<'a> {
         Ok(Some(Requirement::Any(reqs)))
     }
 
-    fn parse_all_of_requirements(&mut self) -> Result<Option<Requirement>, ParseError> {
-        let Some(reqs) = self.parse_list_of_requirements(|s| matches!(s, "and" | "et"))? else {
+    fn parse_comma_separated_requirement_list(
+        &mut self,
+    ) -> Result<Option<Requirement>, ParseError> {
+        let Some(first_req) = self.parse_requirement(PrecedenceLevel::NoBareCommaList)? else {
+            return Ok(None);
+        };
+        let mut reqs = vec![first_req];
+        while self.eat(",") {
+            let Some(next_req) = self.parse_requirement(PrecedenceLevel::NoBareCommaList)? else {
+                break;
+            };
+            reqs.push(next_req);
+        }
+        Ok(Some(reqs)
+            .filter(|reqs| reqs.len() >= 2)
+            .map(Requirement::All))
+    }
+
+    fn parse_and_requirement_list(&mut self) -> Result<Option<Requirement>, ParseError> {
+        let Some(reqs) = self.parse_list_of_requirements(ListMode::All)? else {
             return Ok(None);
         };
         if reqs.len() < 2 {
@@ -290,11 +384,39 @@ impl<'a> Parser<'a> {
         Ok(Some(Requirement::All(reqs)))
     }
 
+    fn parse_or_requirement_list(&mut self) -> Result<Option<Requirement>, ParseError> {
+        let Some(reqs) = self.parse_list_of_requirements(ListMode::Any)? else {
+            return Ok(None);
+        };
+        if reqs.len() < 2 {
+            return Ok(None);
+        }
+        Ok(Some(Requirement::Any(reqs)))
+    }
+
     fn parse_list_of_requirements(
         &mut self,
-        sep_predicate: impl Fn(&str) -> bool,
+        list_mode: ListMode,
     ) -> Result<Option<Vec<Requirement>>, ParseError> {
-        let Some(first_req) = self.parse_base_requirement()? else {
+        let sep_predicate = match list_mode {
+            ListMode::Comma => |_| false,
+            ListMode::Any => |s| matches!(s, "or" | "ou"),
+            ListMode::All => |s| matches!(s, "and" | "et"),
+        };
+
+        let lhs_precedence = match list_mode {
+            ListMode::Comma => PrecedenceLevel::NoBareCommaList,
+            ListMode::Any => PrecedenceLevel::Lowest,
+            ListMode::All => PrecedenceLevel::Lowest,
+        };
+
+        let rhs_precedence = match list_mode {
+            ListMode::Comma => PrecedenceLevel::NoBareCommaList,
+            ListMode::Any => PrecedenceLevel::Lowest,
+            ListMode::All => PrecedenceLevel::Lowest,
+        };
+
+        let Some(first_req) = self.parse_requirement(lhs_precedence)? else {
             return Ok(None);
         };
         let mut requirements = vec![first_req];
@@ -313,13 +435,13 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
 
-            let Some(next_req) = self.parse_base_requirement()? else {
+            let Some(next_req) = self.parse_requirement(rhs_precedence)? else {
                 break;
             };
 
             requirements.push(next_req);
         }
-        Ok(Some(requirements).filter(|_| any_sep_matched))
+        Ok(Some(requirements).filter(|_| any_sep_matched || list_mode == ListMode::Comma))
     }
 
     fn eat_any_of_or_one_of(&mut self) -> bool {
@@ -335,18 +457,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_any_of_courses_shared_topic(&mut self) -> Result<Option<Requirement>, ParseError> {
+    fn parse_and_course_requirement_list_with_shared_topic(
+        &mut self,
+    ) -> Result<Option<Requirement>, ParseError> {
         self.eat_any_of_or_one_of();
         Ok(self
-            .parse_list_of_courses_shared_topic(|s| matches!(s, "or" | "ou"))?
+            .parse_list_of_courses_shared_topic(ListMode::Any)?
             .filter(|courses| courses.len() >= 2)
             .map(|courses| courses.into_iter().map(Requirement::Course).collect())
             .map(Requirement::Any))
     }
 
-    fn parse_all_of_courses_shared_topic(&mut self) -> Result<Option<Requirement>, ParseError> {
+    fn parse_or_course_requirement_list_with_shared_topic(
+        &mut self,
+    ) -> Result<Option<Requirement>, ParseError> {
         Ok(self
-            .parse_list_of_courses_shared_topic(|s| matches!(s, "and" | "et"))?
+            .parse_list_of_courses_shared_topic(ListMode::All)?
             .filter(|courses| courses.len() >= 2)
             .map(|courses| courses.into_iter().map(Requirement::Course).collect())
             .map(Requirement::All))
@@ -354,8 +480,14 @@ impl<'a> Parser<'a> {
 
     fn parse_list_of_courses_shared_topic(
         &mut self,
-        sep_predicate: impl Fn(&str) -> bool,
+        list_mode: ListMode,
     ) -> Result<Option<Vec<Course>>, ParseError> {
+        let sep_predicate = match list_mode {
+            ListMode::Any => |s| matches!(s, "or" | "ou"),
+            ListMode::All => |s| matches!(s, "and" | "et"),
+            ListMode::Comma => unimplemented!(),
+        };
+
         let Some(Course {
             topic,
             number: first_number,
@@ -405,8 +537,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_course(&mut self) -> Result<Option<Course>, ParseError> {
-        let course_topic = self.current_token();
-        if !data::UALBERTA_TOPICS.contains(&course_topic) {
+        let mut course_topic = self.current_token().to_owned();
+        if data::UALBERTA_TOPICS_WITH_SPACES_PREFIXES.contains(&course_topic.as_str()) {
+            course_topic = format!("{} {}", self.nth_token(0), self.nth_token(1));
+            self.bump();
+        } else if !data::UALBERTA_TOPICS.contains(&course_topic.as_str()) {
             return Ok(None);
         }
         self.bump();
@@ -417,11 +552,8 @@ impl<'a> Parser<'a> {
         }
         self.bump();
 
-        _ = self.eat_multiple(&["or", "equivalent"])
-            || self.eat_multiple(&["(", "or", "equivalent", ")"]);
-
         Ok(Some(Course {
-            topic: course_topic.to_owned(),
+            topic: course_topic,
             number: course_number.to_owned(),
         }))
     }
@@ -439,12 +571,24 @@ impl<'a> Parser<'a> {
             "department" | "Department" => Entity::Department,
             "instructor" | "Instructor" => Entity::Instructor,
             "college" | "College" => Entity::College,
-            _ => {
-                return Err(ParseError::Unrecognized);
-            }
+            _ => Entity::Other,
         };
         Ok(Some(Requirement::ConsentOf(entity)))
     }
+
+    fn parse_equivalent_requirement(&mut self) -> Result<Option<Requirement>, ParseError> {
+        if !self.eat("equivalent") {
+            return Ok(None);
+        }
+        Ok(Some(Requirement::All(vec![])))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListMode {
+    Comma,
+    Any,
+    All,
 }
 
 #[cfg(test)]
@@ -454,8 +598,12 @@ mod tests {
 
     #[track_caller]
     fn check(input: &str, output: Expect) {
-        let req = parse_requirement(input).unwrap();
-        output.assert_eq(&format!("{req:?}"));
+        let res = parse_requirement(input);
+        if let Ok(req) = res {
+            output.assert_eq(&format!("{req:?}"));
+        } else {
+            output.assert_eq(&format!("{res:?}"));
+        }
     }
 
     #[test]
@@ -499,18 +647,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_top_level_comma_separated_list() {
+        check("ACCTG 614, FIN 501", expect!["all(ACCTG 614, FIN 501)"]);
+        check(
+            "ACCTG 614, ACCTG 610, FIN 501",
+            expect!["all(ACCTG 614, ACCTG 610, FIN 501)"],
+        );
+        check(
+            "ACCTG 614 or 610, FIN 501 or 503",
+            expect!["all(any(ACCTG 614, ACCTG 610), any(FIN 501, FIN 503))"],
+        );
+    }
+
+    #[test]
     fn misc_broken() {
+        check("ECON 109, and MATH 156", expect!["all(ECON 109, MATH 156)"]);
         check(
             "ECON 109, and MATH 156 or equivalent",
-            expect!["all(ECON 109, MATH 156)"],
+            expect!["Err(DidNotReachEndOfInput { parsed_so_far: all(ECON 109, MATH 156) })"],
         );
         check(
             "ECON 109, ECON 281, 282 and 299 or equivalent",
-            expect!["any(ECON 109, all(ECON 281, ECON 282, ECON 299))"],
+            expect!["any(ECON 109, all(ECON 281, ECON 282, ECON 299), all())"],
         );
         check(
             "ECON 109, ECON 281, 282 and 299 or equivalent, and MATH 156 or equivalent",
-            expect!["any(ECON 109, all(ECON 281, ECON 282, ECON 299))"],
+            expect!["Err(DidNotReachEndOfInput { parsed_so_far: any(ECON 109, all(ECON 281, ECON 282, ECON 299), all()) })"],
         );
         //check(
         //    "One course in Christian theology and permission of the College",
@@ -519,6 +681,7 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
     fn misc_working() {
         check(
             "ACCTG 211 or 311 and ACCTG 222 or 322",
@@ -534,9 +697,7 @@ mod tests {
         );
         check(
             "RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of Instructor",
-            expect![
-                "any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"
-            ],
+            expect!["any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"],
         );
         check(
             "one of CMPUT 175 or CMPUT 275",
@@ -555,11 +716,8 @@ mod tests {
             expect!["all(IMIN 200, consent of instructor)"],
         );
         check(
-            "One of: RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of \
-             Instructor",
-            expect![
-                "any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"
-            ],
+            "One of: RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325 or consent of Instructor",
+            expect!["any(RELIG 240, RELIG 343, EASIA 223, EASIA 323, EASIA 325, consent of instructor)"],
         );
         check(
             "ECON 281, 282 and 299",
@@ -568,7 +726,7 @@ mod tests {
         check("ECON 281, and MATH 156", expect!["all(ECON 281, MATH 156)"]);
         check(
             "ECON 281 and ECON 282, and MATH 156",
-            expect!["all(ECON 281, ECON 282)"],
+            expect!["Err(DidNotReachEndOfInput { parsed_so_far: all(ECON 281, ECON 282) })"],
         );
         check(
             "ECON 281, 282 and 299, and MATH 156",
@@ -577,6 +735,35 @@ mod tests {
         check(
             "ECON 109, ECON 281, 282 and 299, and MATH 156",
             expect!["all(ECON 109, all(ECON 281, ECON 282, ECON 299), MATH 156)"],
+        );
+        check(
+            "ACCTG 614 or 610, FIN 501 or 503",
+            expect!["all(any(ACCTG 614, ACCTG 610), any(FIN 501, FIN 503))"],
+        );
+        check("PL SC 345", expect!["PL SC 345"]);
+        check(
+            "BIOCH 200, PL SC 345, or consent of instructor",
+            expect!["any(BIOCH 200, PL SC 345, consent of instructor)"],
+        );
+        check(
+            "one of PHYS 124, PHYS 144, or EN PH 131",
+            expect!["any(PHYS 124, PHYS 144, EN PH 131)"],
+        );
+        check(
+            "one of PHYS 126, PHYS 146, or PHYS 130 and PHYS 208 or 271",
+            expect!["all(any(PHYS 126, PHYS 146, PHYS 130), any(PHYS 208, PHYS 271))"],
+        );
+        check(
+            "PHYS 130 and PHYS 208 or 271",
+            expect!["all(PHYS 130, any(PHYS 208, PHYS 271))"],
+        );
+        check(
+            "one of PHYS 124, PHYS 144, or EN PH 131, and one of PHYS 126, PHYS 146, or PHYS 130 and PHYS 208 or 271",
+            expect!["Err(DidNotReachEndOfInput { parsed_so_far: all(any(PHYS 124, PHYS 144, EN PH 131), any(PHYS 126, PHYS 146, PHYS 130)) })"]
+        );
+        check(
+            "MATH 115, 118, 136, 146 or 156, and one of PHYS 124, PHYS 144, or EN PH 131, and one of PHYS 126, PHYS 146, or PHYS 130 and PHYS 208 or 271",
+            expect!["Err(DidNotReachEndOfInput { parsed_so_far: all(any(MATH 115, MATH 118, MATH 136, MATH 146, MATH 156), any(PHYS 124, PHYS 144, EN PH 131)) })"],
         );
     }
 }

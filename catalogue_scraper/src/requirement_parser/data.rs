@@ -51,3 +51,16 @@ pub(super) const UALBERTA_TOPICS: [&'static str; 323] = [
     "TAACO", "TAAFI", "TAAMG", "TAAMK", "TAARH", "TAATC", "T DES", "THES", "UKR", "UNIV", "WGS",
     "WKEXP", "WRITE", "WRS", "ZOOL", "ZOOLE",
 ];
+
+pub(super) const UALBERTA_TOPICS_WITH_SPACES: [&'static str; 36] = [
+    "AN SC", "B LAW", "CH E", "CIV E", "C LIT", "D HYG", "EDU F", "EDU M", "EDU P", "EDU S",
+    "ENG M", "EN PH", "ENV E", "ET RE", "F MED", "FR ED", "HE ED", "INT D", "LA ST", "MA PH",
+    "MA SC", "MAT E", "MEC E", "M EDU", "MIN E", "M REG", "NU FS", "OB GY", "PET E", "PL SC",
+    "POL S", "REN R", "R SOC", "SC INF", "SC PO", "T DES",
+];
+
+pub(super) const UALBERTA_TOPICS_WITH_SPACES_PREFIXES: [&'static str; 36] = [
+    "AN", "B", "CH", "CIV", "C", "D", "EDU", "EDU", "EDU", "EDU", "ENG", "EN", "ENV", "ET", "F",
+    "FR", "HE", "INT", "LA", "MA", "MA", "MAT", "MEC", "M", "MIN", "M", "NU", "OB", "PET", "PL",
+    "POL", "REN", "R", "SC", "SC", "T",
+];
